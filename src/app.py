@@ -1,59 +1,72 @@
 from utils import db_connect
 engine = db_connect()
 
-import os
+import streamlit as st
 import pandas as pd
-import numpy as np
 import joblib
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.neighbors import NearestNeighbors
+import numpy as np
 
-# --- PASO 1: CARGA DE DATOS ---
-url = "https://breathecode.herokuapp.com/asset/internal-link?id=2326&path=adult-census-income.csv"
-folder_data = "data"
-file_path = os.path.join(folder_data, "adult_census_income.csv")
+# 1. Configuración y Carga de Archivos
+st.set_page_config(page_title="Estrategia de Movilidad Económica", page_icon="📊")
 
-if not os.path.exists(folder_data): os.makedirs(folder_data)
-df_raw = pd.read_csv(url)
-df_raw.to_csv(file_path, index=False)
+@st.cache_resource
+def load_resources():
+    model = joblib.load('models/final_rf_model_smote.pkl')
+    scaler = joblib.load('models/final_scaler.pkl')
+    columns = joblib.load('models/model_columns.pkl')
+    return model, scaler, columns
 
-# --- PASO 2: PREPROCESAMIENTO ---
-df = df_raw.replace('?', np.nan).dropna().copy()
+try:
+    rf_model, scaler, model_columns = load_resources()
+except Exception as e:
+    st.error("Error cargando los modelos. Asegúrate de que la carpeta /models tenga los archivos .pkl")
+    st.stop()
 
-# Encoding variable objetivo
-le = LabelEncoder()
-df['income_encoded'] = le.fit_transform(df['income'])
+st.title("📈 Recomendador de Ingresos con IA")
+st.markdown("---")
 
-# Definición de columnas (Nombres con puntos según el dataset)
-categorical_cols = ['workclass', 'education', 'marital.status', 'occupation', 
-                    'relationship', 'race', 'sex', 'native.country']
-numerical_cols = ['age', 'fnlwgt', 'education.num', 'capital.gain', 
-                  'capital.loss', 'hours.per.week']
+# 2. Interfaz de Usuario
+col1, col2 = st.columns(2)
 
-# Transformación
-df_final = pd.get_dummies(df, columns=categorical_cols)
-scaler = StandardScaler()
-df_final[numerical_cols] = scaler.fit_transform(df_final[numerical_cols])
+with col1:
+    age = st.number_input("Edad", 18, 90, 30)
+    edu_num = st.slider("Nivel Educativo (Años)", 1, 16, 9)
+    hours = st.number_input("Horas de trabajo semanales", 1, 99, 40)
 
-# --- PASO 3 Y 4: MODELO DE RECOMENDACIÓN ---
-df_exitosos = df_final[df_final['income_encoded'] == 1].copy()
-X_train = df_exitosos.drop(['income', 'income_encoded'], axis=1)
+with col2:
+    capital_gain = st.number_input("Ganancias de Capital ($)", 0, 100000, 0)
+    # Aquí podrías añadir selectbox para ocupación o estado civil 
 
-model_recomender = NearestNeighbors(n_neighbors=3, metric='cosine')
-model_recomender.fit(X_train)
-
-# --- PASO 5: GUARDADO DE MODELO ---
-if not os.path.exists('models'): os.makedirs('models')
-joblib.dump(model_recomender, 'models/recomender_model.pkl')
-joblib.dump(scaler, 'models/scaler.pkl')
-
-print("✅ PROCESO COMPLETADO: Datos cargados, modelo entrenado y persistido en /models.")
-
-# Función de prueba rápida
-def recomendar_estrategia(indice):
-    usuario_input = df_final.iloc[[indice]].drop(['income', 'income_encoded'], axis=1)
-    distancias, indices = model_recomender.kneighbors(usuario_input)
-    return df.iloc[df_exitosos.index[indices[0]]][['education', 'occupation', 'hours.per.week']]
-
-print("\n--- EJEMPLO DE RECOMENDACIÓN PARA ÍNDICE 1114 ---")
-display(recomendar_estrategia(1114))
+# 3. Lógica de Predicción
+if st.button("Verificar mi perfil"):
+    # Crear un DataFrame vacío con las columnas que el modelo espera
+    input_df = pd.DataFrame(0, index=[0], columns=model_columns)
+    
+    # Llenar los campos numéricos
+    input_df['age'] = age
+    input_df['education.num'] = edu_num
+    input_df['hours.per.week'] = hours
+    input_df['capital.gain'] = capital_gain
+    
+    # Escalado (Usamos el scaler guardado)
+    # Nota: El scaler espera todas las numéricas; si no las pedimos, ponemos 0
+    num_cols = ['age', 'fnlwgt', 'education.num', 'capital.gain', 'capital.loss', 'hours.per.week']
+    input_df[num_cols] = scaler.transform(input_df[num_cols])
+    
+    # Predicción
+    probabilidad = rf_model.predict_proba(input_df)[0][1]
+    
+    # 4. Resultados Visuales
+    st.markdown("### Resultado del Análisis")
+    if probabilidad > 0.5:
+        st.success(f"Tu probabilidad de ganar >50K es del **{probabilidad:.2%}**")
+        st.balloons()
+    else:
+        st.warning(f"Tu probabilidad actual es del **{probabilidad:.2%}**")
+        
+    # Recomendación Dinámica
+    st.info("💡 **Hoja de ruta recomendada:**")
+    if edu_num < 13:
+        st.write("- Considera completar un grado universitario (Bachelors). Históricamente, es el factor que más impulsa el ingreso en este modelo.")
+    if hours < 40:
+        st.write("- Incrementar tus horas semanales podría acercarte al umbral de éxito financiero.")
